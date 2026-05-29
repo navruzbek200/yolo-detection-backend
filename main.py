@@ -18,8 +18,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "best.pt")
 YOUTUBE_URL = os.environ.get("YOUTUBE_URL", "https://www.youtube.com/live/86YA-i9Kaak")
+MODEL_PATH = os.environ.get("MODEL_PATH", "yolo11n.pt")
 
 model = YOLO(MODEL_PATH)
 
@@ -38,25 +38,30 @@ def get_stream_url(url: str) -> str:
 def inference_loop():
     while True:
         try:
-            print("Fetching stream URL...")
+            print("Fetching YouTube stream URL...")
             stream_url = get_stream_url(YOUTUBE_URL)
             cap = cv2.VideoCapture(stream_url)
             if not cap.isOpened():
                 raise RuntimeError("Cannot open stream")
+
             status["running"] = True
             status["error"] = None
+            print("Stream opened, starting inference...")
             tick = 0
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     print("Stream dropped, reconnecting...")
                     break
+
                 tick += 1
-                if tick % 6 != 0:   # ~5 fps inference
+                if tick % 3 != 0:
                     continue
-                frame = cv2.resize(frame, (640, 360))
+
                 h, w = frame.shape[:2]
-                results = model(frame, conf=0.4, classes=[0], verbose=False)
+                results = model.predict(frame, classes=[0], conf=0.4, verbose=False)
+
                 dets = []
                 for r in results:
                     for box in r.boxes:
@@ -68,10 +73,14 @@ def inference_loop():
                             "h": round((y2 - y1) / h * 100, 1),
                             "conf": round(float(box.conf[0]), 3),
                         })
+
                 with detections_lock:
                     latest_detections[:] = dets
+
                 status["frames"] += 1
+
             cap.release()
+
         except Exception as e:
             status["running"] = False
             status["error"] = str(e)
@@ -92,11 +101,12 @@ def health():
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
     await websocket.accept()
+    print("WebSocket client connected")
     try:
         while True:
             with detections_lock:
                 dets = list(latest_detections)
             await websocket.send_text(json.dumps(dets))
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
     except (WebSocketDisconnect, Exception):
-        pass
+        print("WebSocket client disconnected")
